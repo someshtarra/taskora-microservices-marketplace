@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-search-service
+  namespace: taskora
+  labels:
+    app: ai-search-service
+    language: python
+    framework: fastapi
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-search-service
+  template:
+    metadata:
+      labels:
+        app: ai-search-service
+    spec:
+      containers:
+        - name: ai-search-service
+          image: taskora/ai-search-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+              name: http
+          resources:
+            requests:
+              cpu: "150m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          # --- Python Liveness Probe ---
+          # Verifies FastAPI event loop is actively serving traffic.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          # --- Python Readiness Probe ---
+          # Verifies vector embeddings database and in-memory caches are loaded.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-search-service
+  namespace: taskora
+spec:
+  selector:
+    app: ai-search-service
+  ports:
+    - protocol: TCP
+      port: 8001
+      targetPort: http

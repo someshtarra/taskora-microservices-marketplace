@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  # 1. Python FastAPI AI & Semantic Search Microservice
+  ai-service:
+    build:
+      context: ./services/ai-search-service
+      dockerfile: Dockerfile
+    container_name: taskora-ai-service
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=8001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # 2. Go (Golang) Order, Milestones & Escrow Microservice
+  order-service:
+    build:
+      context: ./services/order-escrow-service
+      dockerfile: Dockerfile
+    container_name: taskora-order-service
+    ports:
+      - "8002:8002"
+    environment:
+      - PORT=8002
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # 3. Node.js / TypeScript Real-Time Notification Microservice
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: taskora-notification-service
+    ports:
+      - "8003:8003"
+    environment:
+      - PORT=8003
+      - NODE_ENV=production
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8003/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # 4. Java / Spring Boot Payment & Billing Microservice
+  payment-service:
+    build:
+      context: ./services/payment-billing-service
+      dockerfile: Dockerfile
+    container_name: taskora-payment-service
+    ports:
+      - "8004:8004"
+    environment:
+      - SERVER_PORT=8004
+      - SPRING_PROFILES_ACTIVE=prod
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8004/actuator/health/liveness"]
+      interval: 15s
+      timeout: 4s
+      retries: 4
+    restart: unless-stopped
+
+  # 5. Reverse Proxy API Gateway
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: taskora-api-gateway
+    ports:
+      - "8080:80"
+    depends_on:
+      - ai-service
+      - order-service
+      - notification-service
+      - payment-service
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # 6. Shared Infrastructure: Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: taskora-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+networks:
+  default:
+    name: taskora-network

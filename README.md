@@ -31,23 +31,23 @@ flowchart TD
     Client["Client Browser (React 18 SPA)"] -->|HTTPS / Port 443| Ingress["Kubernetes Ingress (TLS Termination)"]
     Ingress -->|HTTP / Port 80| Gateway["Nginx API Gateway (Reverse Proxy)"]
 
-    subgraph "taskora Namespace (Private Pod Network)"
-        Gateway -->|"/api/v1/ai/*" (Port 8001)| PyAI["ai-search-service (Python / FastAPI)"]
-        Gateway -->|"/api/v1/orders/*" (Port 8002)| GoOrder["order-escrow-service (Go / Golang)"]
-        Gateway -->|"/api/v1/notifications/*" (Port 8003)| NodeNotif["notification-service (Node.js / TS)"]
-        Gateway -->|"/api/v1/payments/*" (Port 8004)| JavaPay["payment-billing-service (Java / Spring Boot)"]
+    subgraph TaskoraNet ["taskora Namespace - Private Pod Network"]
+        Gateway -->|Routes /api/v1/ai/ on port 8001| PyAI["ai-search-service (Python / FastAPI)"]
+        Gateway -->|Routes /api/v1/orders/ on port 8002| GoOrder["order-escrow-service (Go / Golang)"]
+        Gateway -->|Routes /api/v1/notifications/ on port 8003| NodeNotif["notification-service (Node.js / TS)"]
+        Gateway -->|Routes /api/v1/payments/ on port 8004| JavaPay["payment-billing-service (Java / Spring Boot)"]
 
         %% Inter-service sync REST
-        GoOrder -->|"Sync REST: POST /api/v1/payments/calculate"| JavaPay
+        GoOrder -->|Sync REST: POST /api/v1/payments/calculate| JavaPay
 
         %% Async Event-Driven Pub/Sub
-        GoOrder -->|"Async Event: order.created, milestone.released"| RedisBus[("Redis 7 Event Bus (Port 6379)")]
-        RedisBus -->|"Pub/Sub Event Listener"| NodeNotif
-        NodeNotif -->|"WebSockets Push"| Client
+        GoOrder -->|Async Event: order.created, milestone.released| RedisBus[("Redis 7 Event Bus - Port 6379")]
+        RedisBus -->|Pub/Sub Event Listener| NodeNotif
+        NodeNotif -->|WebSockets Push| Client
 
         %% Persistent Data Layer
-        PyAI -->|"Embeddings & Similarity"| PgDB[("PostgreSQL 16 + pgvector (Port 5432)")]
-        GoOrder -->|"Escrow Ledger Transactions"| PgDB
+        PyAI -->|Embeddings and Similarity| PgDB[("PostgreSQL 16 + pgvector - Port 5432")]
+        GoOrder -->|Escrow Ledger Transactions| PgDB
     end
 ```
 

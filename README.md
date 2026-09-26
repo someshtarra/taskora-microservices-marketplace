@@ -10,13 +10,105 @@ Taskora is a complex, production-grade microservices marketplace platform connec
 
 The platform's backend is architected across multiple programming languages, each chosen for its domain strengths:
 
-| Microservice | Language & Framework | Primary Responsibility | Port |
-|---|---|---|---|
-| **AI & Semantic Search** | **Python** (FastAPI, Pydantic, Uvicorn) | Natural language search queries, vector similarity, and AI assistant | `8001` |
-| **Order & Escrow Service** | **Go / Golang** (`net/http`, Goroutines) | High-throughput order placement, escrow balance locking & milestone release | `8002` |
-| **Notification Service** | **Node.js & TypeScript** (Native HTTP, WebSockets) | Real-time event pub/sub, live chat notifications, and delivery alerts | `8003` |
-| **Payment & Billing Service** | **Java** (Spring Boot 3, Spring Actuator) | PCI-compliant calculations, tax/VAT estimation, coupon validation & invoices | `8004` |
-| **API Gateway** | **Nginx** (Reverse Proxy & Ingress) | Unified routing, rate limiting, and CORS headers | `8080` |
+| Microservice | Language & Framework | Primary Responsibility | Port | Directory |
+|---|---|---|---|---|
+| **AI & Semantic Search** | **Python** (FastAPI, Pydantic, Uvicorn) | Natural language search queries, vector similarity, and AI assistant | `8001` | [`services/ai-search-service`](./services/ai-search-service) |
+| **Order & Escrow Service** | **Go / Golang** (`net/http`, Goroutines) | High-throughput order placement, escrow balance locking & milestone release | `8002` | [`services/order-escrow-service`](./services/order-escrow-service) |
+| **Notification Service** | **Node.js & TypeScript** (Native HTTP, WebSockets) | Real-time event pub/sub, live chat notifications, and delivery alerts | `8003` | [`services/notification-service`](./services/notification-service) |
+| **Payment & Billing Service** | **Java** (Spring Boot 3, Spring Actuator) | PCI-compliant calculations, tax/VAT estimation, coupon validation & invoices | `8004` | [`services/payment-billing-service`](./services/payment-billing-service) |
+| **API Gateway** | **Nginx** (Reverse Proxy & Ingress) | Unified routing, rate limiting, and CORS headers | `8080` | [`services/api-gateway`](./services/api-gateway) |
+
+---
+
+## 🛠️ DevOps Engineer Guide: Service-to-Service Connectivity & Architecture
+
+This guide explains how services connect to each other, how traffic is routed and secured, and how failures are mitigated in production.
+
+### 1. Inter-Service Communication Topology
+
+```mermaid
+flowchart TD
+    Client["Client Browser (React 18 SPA)"] -->|HTTPS / Port 443| Ingress["Kubernetes Ingress (TLS Termination)"]
+    Ingress -->|HTTP / Port 80| Gateway["Nginx API Gateway (Reverse Proxy)"]
+
+    subgraph "taskora Namespace (Private Pod Network)"
+        Gateway -->|"/api/v1/ai/*" (Port 8001)| PyAI["ai-search-service (Python / FastAPI)"]
+        Gateway -->|"/api/v1/orders/*" (Port 8002)| GoOrder["order-escrow-service (Go / Golang)"]
+        Gateway -->|"/api/v1/notifications/*" (Port 8003)| NodeNotif["notification-service (Node.js / TS)"]
+        Gateway -->|"/api/v1/payments/*" (Port 8004)| JavaPay["payment-billing-service (Java / Spring Boot)"]
+
+        %% Inter-service sync REST
+        GoOrder -->|"Sync REST: POST /api/v1/payments/calculate"| JavaPay
+
+        %% Async Event-Driven Pub/Sub
+        GoOrder -->|"Async Event: order.created, milestone.released"| RedisBus[("Redis 7 Event Bus (Port 6379)")]
+        RedisBus -->|"Pub/Sub Event Listener"| NodeNotif
+        NodeNotif -->|"WebSockets Push"| Client
+
+        %% Persistent Data Layer
+        PyAI -->|"Embeddings & Similarity"| PgDB[("PostgreSQL 16 + pgvector (Port 5432)")]
+        GoOrder -->|"Escrow Ledger Transactions"| PgDB
+    end
+```
+
+### 2. Service Discovery & DNS Resolution
+
+Microservices never use hardcoded IP addresses. They resolve each other via internal DNS:
+
+- **In Kubernetes (Production)**:
+  Uses Kubernetes CoreDNS format: `<service-name>.<namespace>.svc.cluster.local:<port>`
+  - Python AI Service: `http://ai-search-service.taskora.svc.cluster.local:8001`
+  - Go Order & Escrow: `http://order-escrow-service.taskora.svc.cluster.local:8002`
+  - Node.js Notifications: `http://notification-service.taskora.svc.cluster.local:8003`
+  - Java Payment Service: `http://payment-billing-service.taskora.svc.cluster.local:8004`
+  - Redis: `redis://redis.taskora.svc.cluster.local:6379`
+  - PostgreSQL: `postgresql://postgres.taskora.svc.cluster.local:5432/taskoradb`
+
+- **In Docker Compose (Local Dev)**:
+  Uses Docker bridge network DNS aliases (`taskora-network`):
+  - `http://ai-service:8001`
+  - `http://order-service:8002`
+  - `http://notification-service:8003`
+  - `http://payment-service:8004`
+  - `redis:6379`
+
+### 3. Synchronous vs. Asynchronous Communication Matrix
+
+| Source Service | Target Service | Protocol | Pattern | Why? |
+|---|---|---|---|---|
+| **API Gateway** | **All Microservices** | `HTTP/1.1` & `HTTP/2` | Synchronous Reverse Proxy | Fast path routing, SSL termination, and client CORS handling |
+| **Order Service (Go)** | **Payment Service (Java)** | `REST / JSON` | Synchronous Inter-Service RPC | Direct escrow ledger validation and tax computation before locking funds |
+| **Order Service (Go)** | **Redis Event Bus** | `RESP` / Pub/Sub | Asynchronous Event Emitter | Decouples order state changes (`milestone.approved`, `refund.processed`) from notifications |
+| **Notification Service (Node)** | **Redis Event Bus** | `RESP` / Pub/Sub | Asynchronous Event Consumer | Subscribes to platform events and broadcasts notifications non-blockingly |
+| **Notification Service (Node)** | **Client Browser** | `WebSocket (ws://)` | Full-Duplex Persistent Stream | Instant real-time typing indicators, chat messages, and escrow status badges |
+
+### 4. Kubernetes Network Security (`NetworkPolicy`)
+
+To enforce zero-trust security inside the cluster:
+- **Default Deny Ingress**: All pods reject outside network traffic by default.
+- **Ingress Whitelist**: Only the Nginx API Gateway pod receives external traffic from the Ingress controller.
+- **Inter-Service Authorization**: Only the `order-escrow-service` pod is permitted egress to port `8004` on the `payment-billing-service`.
+- **Database Isolation**: Direct public access to PostgreSQL and Redis is blocked; only authorized pods within the `taskora` namespace can connect.
+- Manifest: [`k8s/network-policy.yaml`](./k8s/network-policy.yaml).
+
+### 5. Distributed Tracing & Correlation IDs
+
+Every inbound client request is tagged at the API Gateway with an `X-Correlation-ID` header:
+1. `Client -> Ingress -> API Gateway`: Injects `X-Correlation-ID: req-7b82f0c1`.
+2. When the **Go Order Service** calls the **Java Payment Service**, it forwards the `X-Correlation-ID`.
+3. When an event is published to Redis, the correlation ID is included in the JSON payload metadata.
+4. When logs are collected by FluentBit / Grafana Loki, DevOps can trace a single transaction across all 4 polyglot services with one query:
+   ```logql
+   {namespace="taskora"} |= "req-7b82f0c1"
+   ```
+
+### 6. Resilience, Retries & Circuit Breaking
+
+- **Connection Pooling**: Go and Java microservices utilize bounded connection pools (e.g. HikariCP for Java, `sql.DB.SetMaxOpenConns` for Go) to prevent database exhaustion.
+- **Fail-Fast Timeouts**:
+  - API Gateway to Microservice: `3.0s` timeout.
+  - Go Order Service to Java Payment Service: `2.0s` timeout with 2 exponential backoff retries.
+- **Graceful Degradation**: If the `notification-service` is temporarily restarting, order placements and escrow funding **do not fail**; the event is buffered in Redis and delivered once the notification pods pass their readiness checks.
 
 ---
 
@@ -27,6 +119,7 @@ In alignment with [`someshtarra/kubernetes-probes-architecture-guide`](./k8s/PRO
 - **Go**: Sub-millisecond lightweight memory probes (`/healthz` and `/readyz`).
 - **Node.js**: Event loop health and memory limit monitoring to prevent OOM kills.
 - **Java Spring Boot**: Uses `startupProbe` with Spring Actuator to protect the JVM during cold-start class loading, preventing premature pod restarts.
+
 
 
 - **Brand Name**: **Taskora**
